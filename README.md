@@ -14,7 +14,7 @@ GitHub Actions ──build──▶ ghcr.io/<owner>/workbuddy-claim:latest
 
 ## 先读这一段
 
-> **当前实例已部署**：Unraid `Tower`（192.168.31.190）上的容器 `workbuddy-claim`，镜像 `ghcr.io/robs87/workbuddy-claim:latest`，DockerMan 托管（`net.unraid.docker.managed=dockerman`），已加入开机自启，每日 09:00（Asia/Shanghai）签到。待补：模板里的 Access Token。
+> **当前实例已部署**：Unraid `Tower`（192.168.31.190）上的容器 `workbuddy-claim`，镜像 `ghcr.io/robs87/workbuddy-claim:latest`，DockerMan 托管（`net.unraid.docker.managed=dockerman`），已加入开机自启，每日 09:00（Asia/Shanghai）签到。**唯一待补**：模板里的 Access Token（见第一节，令牌本体是 `eyJ` 开头的长串）。
 
 - 签到走的是 WorkBuddy 客户端自己用的官方接口，鉴权就是你的登录态，**没有绕过任何校验**，只是把一次手工点击换成一次 HTTP 请求。
 - 接口对重复调用是幂等的：已签到返回 `code=10001`，不会多领，也不会扣分。
@@ -23,11 +23,22 @@ GitHub Actions ──build──▶ ghcr.io/<owner>/workbuddy-claim:latest
 
 ## 一、拿到 accessToken
 
+> **别搞混这两个东西**：本节会出现一段 **JS 脚本**，它要在浏览器 Console 里**运行**；而 Unraid 的 Access Token 框要填的是它**跑出来**的那一行令牌（以 `eyJ` 开头，200–400 字符）。
+> 把脚本整段贴进令牌框会立刻报 `TOKEN_INVALID | reason=看起来是 JS 代码而不是令牌`（1.2.0 及更早版本会抛更晦涩的 `UnicodeEncodeError: latin-1`）。
+
 请打开**控制台页面**而不是官网首页：<https://www.codebuddy.cn/profile/plan> 。官网首页的请求全发给 CDN 静态资源（`download.codebuddy.cn`），永远看不到鉴权头。
 
-### 方式 A：Console 一行钩子（最省事，推荐）
+### 方式 A：Network 面板（最稳，推荐）
 
-在该页面按 F12 → **Console** → 粘贴下面这段 → 回车 → 刷新页面（Cmd/Ctrl+R）：
+1. 在该页面按 F12 → **Network** → 选中 **Fetch/XHR**；
+2. 勾上 **Preserve log**，再按 Cmd/Ctrl+R 刷新；
+3. Filter 框输入 `billing`（**不要**输入 `v2/billing`——网页端路径没有 `v2` 前缀，`/v2` 是桌面客户端用的）；
+4. 点开 `get-user-resource-summary` 或 `checkin` 类请求 → **Headers** → **Request Headers** → 复制 `authorization:` 后面那一整串（`Bearer eyJ...`，很长，别截断）；
+5. 贴进 Unraid → Docker → `workbuddy-claim` → **Edit** → **Access Token** → **Apply**。
+
+### 方式 B：Console 钩子（少点几下，但别刷新）
+
+在该页面按 F12 → **Console** → 粘贴下面这段 → 回车：
 
 ```js
 (()=>{const show=t=>{if(t){console.log('%cTOKEN','color:#0f0;font-weight:700',t);try{copy(t);console.log('已复制到剪贴板')}catch(e){}}};
@@ -36,14 +47,7 @@ const s=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.setRe
 console.log('钩子已就位，刷新页面');})()
 ```
 
-刷新时页面自己会拉 `billing` 接口，控制台打出绿色 `TOKEN` 并自动复制。复制到的值形如 `Bearer eyJhbGciOi...`。
-
-### 方式 B：Network 面板
-
-1. F12 → **Network** → 点 **Fetch/XHR**；
-2. Filter 框输入 `billing`（**不要**输入 `v2/billing`——网页端路径没有 `v2` 前缀，`/v2` 是桌面客户端用的）；
-3. 找到 `get-user-resource-summary` 或 `checkin` 类请求 → **Request Headers** → `Authorization: Bearer eyJ...`；
-4. 复制 `Bearer ` 之后那一整串（很长，别截断）。
+装好后**不要整页刷新**（刷新会清掉钩子，得重来）。直接在页面里点一下「签到」按钮、或点左侧菜单切个页（前端路由不算刷新），控制台就会打出绿色 `TOKEN` 并自动复制到剪贴板。复制到的值形如 `Bearer eyJhbGciOi...`。
 
 贴进模板时带不带 `Bearer ` 前缀都能识别（脚本会自动去掉前缀、引号和换行）。
 

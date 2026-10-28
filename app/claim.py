@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 HTTP_TIMEOUT = 20
 
 TZ = ZoneInfo(os.environ.get("TZ_NAME") or os.environ.get("TZ") or "Asia/Shanghai")
@@ -53,7 +53,32 @@ def _normalize_token(raw: str) -> str:
     return v
 
 
+def _token_problem(v: str) -> str | None:
+    """粗筛明显不是令牌的输入。
+
+    2026-10-28 实况：有人把 README 里取令牌用的 JS 钩子整段贴进了 Access Token，
+    结果 http.client 抛 `UnicodeEncodeError: latin-1`（中文注释无法进 header），
+    报错指向太偏。这里提前把人话讲清楚。
+    """
+    if not v:
+        return None
+    for marker in ("console.log", "function", "=>", "()=>", "();"):
+        if marker in v:
+            return "看起来是 JS 代码而不是令牌"
+    if "\n" in v or "\r" in v:
+        return "含换行"
+    if not v.isascii():
+        bad = next(ch for ch in v if not ch.isascii())
+        return f"含非 ASCII 字符 {bad!r}"
+    if " " in v or "\t" in v:
+        return "中间含空格"
+    if len(v) < 40:
+        return f"长度只有 {len(v)}，正常令牌超过 100 字符"
+    return None
+
+
 TOKEN = _normalize_token(os.environ.get("WB_TOKEN") or "")
+TOKEN_PROBLEM = _token_problem(TOKEN)
 
 CLAIM_AT = os.environ.get("CLAIM_AT") or "08:00"
 DRY_RUN = (os.environ.get("DRY_RUN") or "").lower() in {"1", "true", "yes", "on"}
@@ -390,6 +415,15 @@ def _mark(state_key: str, **fields) -> None:
 
 def run_claim() -> int:
     """执行一次领取。返回进程退出码语义：0 成功/已签，2 鉴权失败，1 其它失败。"""
+    if TOKEN_PROBLEM:
+        log(
+            "TOKEN_INVALID",
+            reason=TOKEN_PROBLEM,
+            hint="Access Token 该填 eyJ 开头的长串（带不带 Bearer 都行），不是取令牌用的 JS 脚本；见 README 第一节",
+        )
+        _mark("last_attempt", last_outcome="config_error", last_error=f"WB_TOKEN 无效: {TOKEN_PROBLEM}")
+        return 2
+
     creds = resolve_credentials()
     if not creds:
         log("CONFIG_ERROR", hint="缺少 WB_TOKEN：在 Docker → workbuddy-claim → Edit → Access Token 里粘贴登录令牌")
@@ -490,6 +524,7 @@ def main_loop() -> int:
         base=BASE_URL_OVERRIDE or "auto",
         dry_run=DRY_RUN,
         token_present=bool(TOKEN),
+        token_problem=TOKEN_PROBLEM,
         cookie_present=bool(COOKIE),
         cookiecloud=bool(CC_UUID and CC_PASSWORD),
     )
@@ -565,6 +600,7 @@ def main(argv: list[str]) -> int:
             dry_run=DRY_RUN,
             token_present=bool(TOKEN),
             token_length=len(TOKEN) or None,
+            token_problem=TOKEN_PROBLEM,
             cookie_present=bool(COOKIE),
             cc_url=CC_URL,
             cc_uuid=bool(CC_UUID),
