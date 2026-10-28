@@ -449,7 +449,7 @@ def run_claim() -> int:
         log(
             "AUTH_FINAL",
             rejected=",".join(rejected),
-            hint="在浏览器打开 https://www.codebuddy.cn/profile/plan 确认已登录，并让 CookieCloud 同步一次",
+            hint="令牌失效或被拒：打开 https://www.codebuddy.cn/profile/plan ，F12 → Console 跑 README 第一节的钩子取 Bearer，填进 Docker → Edit → Access Token",
         )
         return 2
 
