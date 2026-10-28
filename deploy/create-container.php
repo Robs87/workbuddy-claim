@@ -1,11 +1,11 @@
-# 在 Unraid 主机上运行：通过 DockerMan 自己的 xmlToCommand() 建房
-# 保证容器带 net.unraid.docker.managed=dockerman 标签，与 WebUI 点击 Apply 完全一致。
-#
-# 用法：
-#   php -d docroot=/usr/local/emhttp create-container.php /boot/config/plugins/dockerMan/templates-user/my-workbuddy-claim.xml
-# 或（会先删同名容器）：
-#   php -d docroot=/usr/local/emhttp create-container.php <xml> --recreate
-
+<?php
+// =============================================================================
+// 通过 DockerMan 自己的 xmlToCommand() 建房。
+// 保证容器带 net.unraid.docker.managed=dockerman 标签，与 WebUI 点击 Apply 完全一致。
+//
+// 用法（在 Unraid 主机上）：
+//   php -d docroot=/usr/local/emhttp create-container.php <xml路径> [--recreate]
+// =============================================================================
 $docroot = '/usr/local/emhttp';
 $_SERVER['DOCUMENT_ROOT'] = $docroot;
 

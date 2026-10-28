@@ -14,6 +14,8 @@ GitHub Actions ──build──▶ ghcr.io/<owner>/workbuddy-claim:latest
 
 ## 先读这一段
 
+> **当前实例已部署**：Unraid `Tower`（192.168.31.190）上的容器 `workbuddy-claim`，镜像 `ghcr.io/robs87/workbuddy-claim:latest`，DockerMan 托管（`net.unraid.docker.managed=dockerman`），已加入开机自启，每日 09:00（Asia/Shanghai）签到。待补：模板里的 Access Token。
+
 - 签到走的是 WorkBuddy 客户端自己用的官方接口，鉴权就是你的登录态，**没有绕过任何校验**，只是把一次手工点击换成一次 HTTP 请求。
 - 接口对重复调用是幂等的：已签到返回 `code=10001`，不会多领，也不会扣分。
 - 官方口径是"人工签到"，且平台对脚本签到有风控。**用不用、用多久，请自行判断**；本仓库不保证账号策略变化后仍然可用。真出问题时撤销方式见文末。

@@ -25,7 +25,10 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 echo "== 1/5 备份现有模板与容器基线 =="
 mkdir -p "$BACKUP_DIR"
-[ -f "$TMPL" ] && cp -a "$TMPL" "$BACKUP_DIR/" && echo "已备份旧模板"
+if [ -f "$TMPL" ]; then
+  cp -a "$TMPL" "$BACKUP_DIR/"
+  echo "已备份旧模板"
+fi
 docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' > "$BACKUP_DIR/containers-baseline.tsv"
 echo "基线: $(wc -l < "$BACKUP_DIR/containers-baseline.tsv") 个容器 -> $BACKUP_DIR"
 
