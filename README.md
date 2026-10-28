@@ -23,15 +23,33 @@ GitHub Actions ──build──▶ ghcr.io/<owner>/workbuddy-claim:latest
 
 ## 一、拿到 accessToken
 
-浏览器登录 <https://www.codebuddy.cn>，按 F12 打开 DevTools：
+请打开**控制台页面**而不是官网首页：<https://www.codebuddy.cn/profile/plan> 。官网首页的请求全发给 CDN 静态资源（`download.codebuddy.cn`），永远看不到鉴权头。
 
-1. 切到 **Network** 面板，随便点开一个页面功能，筛出 `/v2/billing` 开头的请求；
-2. 看 **Request Headers** 里的 `Authorization: Bearer eyJhbGciOi...`；
-3. 复制 `Bearer ` 后面那一整串（很长，别截断）。
+### 方式 A：Console 一行钩子（最省事，推荐）
 
-令牌有效期约 **30 天**（`expiresIn=2592000`）。只要你平时用桌面客户端，登录态会自动续期；但容器拿不到刷新动作，所以**到期后要重新复制一次**填回 Unraid（下面第六节）。
+在该页面按 F12 → **Console** → 粘贴下面这段 → 回车 → 刷新页面（Cmd/Ctrl+R）：
 
-> 本机 `workbuddy-desktop.info` 里的令牌是 AES-256-GCM 信封加密的，脚本解不出来，也不该去解——请走 DevTools 手工复制这一条正道。
+```js
+(()=>{const show=t=>{if(t){console.log('%cTOKEN','color:#0f0;font-weight:700',t);try{copy(t);console.log('已复制到剪贴板')}catch(e){}}};
+const f=window.fetch;window.fetch=function(...a){try{const h=a[1]&&a[1].headers;if(h){const v=h.get?h.get('Authorization'):(h.Authorization||h.authorization);show(v)}}catch(e){}return f.apply(this,a)};
+const s=XMLHttpRequest.prototype.setRequestHeader;XMLHttpRequest.prototype.setRequestHeader=function(k,v){try{if(/^authorization$/i.test(k))show(v)}catch(e){}return s.apply(this,arguments)};
+console.log('钩子已就位，刷新页面');})()
+```
+
+刷新时页面自己会拉 `billing` 接口，控制台打出绿色 `TOKEN` 并自动复制。复制到的值形如 `Bearer eyJhbGciOi...`。
+
+### 方式 B：Network 面板
+
+1. F12 → **Network** → 点 **Fetch/XHR**；
+2. Filter 框输入 `billing`（**不要**输入 `v2/billing`——网页端路径没有 `v2` 前缀，`/v2` 是桌面客户端用的）；
+3. 找到 `get-user-resource-summary` 或 `checkin` 类请求 → **Request Headers** → `Authorization: Bearer eyJ...`；
+4. 复制 `Bearer ` 之后那一整串（很长，别截断）。
+
+贴进模板时带不带 `Bearer ` 前缀都能识别（脚本会自动去掉前缀、引号和换行）。
+
+令牌有效期约 **30 天**（`expiresIn=2592000`）。桌面客户端会自己续期，但容器拿不到刷新动作，所以**到期后要重新复制一次**填回 Unraid。
+
+> 桌面客户端的 `workbuddy-desktop.info` 与浏览器的登录态都是信封加密的（密文带 `v2:` 前缀，密钥在 IndexedDB 内且不可导出），脚本解不出来，也不该去解——请走上面两条正道。
 
 ## 二、建仓并推送
 
@@ -117,44 +135,57 @@ docker logs --tail 50 workbuddy-claim
 
 状态机在 `/mnt/user/appdata/workbuddy-claim/state.json`，含最近 90 天历史；`last_success` 是健康检查用的心跳文件，超过 36 小时未更新容器会被 Docker 标记为 `unhealthy`。
 
-## 六、令牌自动续期（接 Unraid 上的 CookieCloud）
+## 六、CookieCloud 自动续期：已验证不可行（附证据）
 
-容器每次运行都先向同机的 CookieCloud 要一次浏览器当前登录态，拿到就用，拿不到才回退到模板里手填的 `WB_TOKEN`。于是「令牌 30 天过期」这件事由浏览器接管了。
+结论先写在这里，避免重复投入：**CookieCloud 供不上签到所需的凭据，这不是配置问题，是原理问题。**
 
-前置：Unraid 上有 `easychen/cookiecloud` 在跑，浏览器装了 CookieCloud 扩展且**已同步过 www.codebuddy.cn**（在该站点登录并正常浏览一次即可触发同步）。
+### 6.1 三次对照实验：网关只认 Bearer
 
-模板里四个参数：
+在 2026-10-28 用同一时刻、同一网关做对照（cookie 取自 CookieCloud 解密的全量数据）：
 
-| 参数 | 说明 |
+| 请求 | 不带凭据 | 带全套 cookie |
+|---|---|---|
+| `POST /billing/meter/daily-checkin` | nginx 401 | nginx 401（响应体一字不差） |
+| `POST /v2/billing/meter/daily-checkin` | nginx 401 | nginx 401 |
+| `POST /v2/billing/meter/check-gift-claimed`（不存在的路由） | **应用层 404 JSON** | 应用层 404 JSON |
+
+判据是最后一行：一条不存在的路由能穿透 nginx 打到后端并返回 JSON，说明网络、路径、DNS 全都通。**401 是鉴权层对「没有 `Authorization: Bearer`」的判定**，与 cookie 无关。
+
+### 6.2 浏览器里也取不到那个 Bearer
+
+| 检查项 | 结果 |
 |---|---|
-| `CC_URL` | `http://192.168.31.190:8089`（同机默认值） |
-| `CC_UUID` | 扩展设置页里的 UUID，也是服务端数据文件名 |
-| `CC_PASSWORD` | 扩展设置页里的密码，**必填** |
-| `CC_DOMAIN` | 默认 `codebuddy.cn`；若登录态在 `workbuddy.cn` 下则改掉 |
+| `local_storage_data`（已开启关键词同步后） | `www.codebuddy.cn` 67 个键 |
+| 其中 JWT 形态（`eyJ...`） | **0 个** |
+| 键的构成 | `AEGIS_ID`、约 40 个 `__BEACON_*` 埋点、`loggedIn`、`i18nextLng`、`CODEBUDDY_IDE_SELECTED_ACCOUNT_ID` |
+| 唯一像凭据的值 | `9c412d60d29118e0` = `v2:` 开头、403 字节 → **信封密文** |
 
-服务端 `POST /get/<uuid>` 带 `password` 时会直接返回明文，所以容器内没有任何 AES 实现，也不需要保存浏览器密码之外的密钥。
+网页端前端（`assets.workbuddy.cn/.../config.js`）的响应拦截器在 401 后会调用 `session.renew()` 再重放请求——它用的是 **OAuth/Keycloak 会话 + 短期 access token**，运行时换票，令牌从不落盘明文。解密密钥是 IndexedDB 里的不可导出 WebCrypto key，**任何同步机制都拿不到**。
 
-凭据选择顺序：**localStorage 里的令牌 → 该域名的 cookie → 手动填的 `WB_TOKEN`**。两者都会随请求发出，服务端认哪个用哪个。
+顺带一个和直觉相反的细节：网页端 `baseURL` 是空字符串（同源），路径是 `/billing/meter/...` **没有 `v2`**；`/v2` 前缀是桌面客户端用的。两者并存，别混用。
 
-诊断（只打印结构与键名，不输出任何凭据值）：
+### 6.3 所以现在的做法
+
+`WB_TOKEN` 是唯一被接口接受的凭据形态，优先级为：**手填 `WB_TOKEN` → CookieCloud（兜底）**。有令牌时连 CookieCloud 都不会被请求，避免每天先撞一次必然失败的 401。
+
+CookieCloud 相关四个参数（`CC_URL`/`CC_UUID`/`CC_PASSWORD`/`CC_DOMAIN`）在模板里降级为 advanced，仅保留诊断价值：
 
 ```bash
 docker exec workbuddy-claim python3 /app/claim.py --cc-probe
 ```
 
-正常会看到类似：
+该命令只打印结构与键名，绝不输出凭据值。
 
-```
-CC_OK | hosts=www.codebuddy.cn cookie_count=6 token_present=True token_host=www.codebuddy.cn
-```
+### 6.4 如果将来一定要全自动
 
-失败排查：
+唯一剩下的路径是**在容器里跑无头浏览器**：用 CookieCloud 的 cookie 打开 `https://www.codebuddy.cn/profile/plan`，让页面自己走 SSO 换票，截下 `Authorization` 头再调签到接口。可行性依赖浏览器侧登录态，实测 cookie 寿命：
 
-- `CC_FAIL status=500` → 密码错；
-- `CC_EMPTY` → 同步过，但里面没有 codebuddy.cn 的数据，去浏览器访问一次该站点再等扩展同步；
-- `CC_SKIP` → `CC_UUID`/`CC_PASSWORD` 没填。
+| cookie | 过期 |
+|---|---|
+| `KEYCLOAK_SESSION` | 2027-10-16（约一年） |
+| `session` / `session_2` | 2026-11-04（约 6 天，随访问刷新） |
 
-仍然手动处理的情况：CookieCloud 里也没有可用凭据（比如换了设备、清了浏览器数据、扩展停了），日志出现 `AUTH_FINAL`，此时按第一节重新取一个令牌填进去即可。
+代价：镜像从 ~60MB 涨到 ~1.6GB，失败模式变成「浏览器侧登出」。当前选择不做，记录在此备用。
 
 ## 七、常见问题
 
@@ -162,6 +193,7 @@ CC_OK | hosts=www.codebuddy.cn cookie_count=6 token_present=True token_host=www.
 |---|---|
 | `docker pull` 报 `unauthorized` | 包还是私有的，见第三节；或本地 ghcr 凭据失效 |
 | `AUTH_FAILED ... HTTP 401` | 令牌过期/复制不全（必须含 `Bearer ` 之后全部字符） |
+| `CC_FALLBACK` | 没填 `WB_TOKEN`，正在用 CookieCloud 兜底；该路径已证明无法通过鉴权，去填令牌即可 |
 | `unexpected code=xxx` | 上游业务码变化，看日志里的 `msg`；接口路径可能改了，用 `WB_CLAIM_PATH` 覆盖，无需重建镜像 |
 | `响应不是 JSON` | 被网关/WAF 拦了，通常是 IP 或请求头不匹配；先设 `DRY_RUN=true` 确认出网 |
 | 日志时间不对 | 改 `TZ`（默认 `Asia/Shanghai`），同时确认 Unraid 宿主时区 |

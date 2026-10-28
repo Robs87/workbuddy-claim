@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 HTTP_TIMEOUT = 20
 
 TZ = ZoneInfo(os.environ.get("TZ_NAME") or os.environ.get("TZ") or "Asia/Shanghai")
@@ -365,15 +365,21 @@ def attempt(base: str, cred: dict) -> str:
 
 
 def resolve_credentials() -> list[dict]:
-    """按新鲜度排序的凭据源：CookieCloud 在前（浏览器刚同步过），环境变量垫底。"""
-    creds: list[dict] = []
-    cc = credentials_from_cookiecloud()
-    if cc:
-        creds.append(cc)
+    """凭据源优先级：手填 WB_TOKEN → CookieCloud。
+
+    2026-10-28 取证结论：签到网关只接受 `Authorization: Bearer`，浏览器 cookie
+    （Keycloak 会话）在任何情况下都返回同一个 nginx 401；且浏览器把令牌存成
+    `v2:` 信封密文，密钥为 IndexedDB 内不可导出，任何同步机制都取不到。
+    因此 CookieCloud 只保留为兜底，有令牌时连探测请求都不发，避免每天先撞一次 401。
+    """
     env = env_credentials()
     if env:
-        creds.append(env)
-    return creds
+        return [env]
+    cc = credentials_from_cookiecloud()
+    if cc:
+        log("CC_FALLBACK", note="无 WB_TOKEN，改用 CookieCloud；此路径已被证明无法通过签到鉴权，仅作诊断")
+        return [cc]
+    return []
 
 
 def _mark(state_key: str, **fields) -> None:
@@ -386,7 +392,7 @@ def run_claim() -> int:
     """执行一次领取。返回进程退出码语义：0 成功/已签，2 鉴权失败，1 其它失败。"""
     creds = resolve_credentials()
     if not creds:
-        log("CONFIG_ERROR", hint="既没有 CookieCloud 凭据（CC_UUID/CC_PASSWORD），也没有 WB_TOKEN/WB_COOKIE")
+        log("CONFIG_ERROR", hint="缺少 WB_TOKEN：在 Docker → workbuddy-claim → Edit → Access Token 里粘贴登录令牌")
         return 2
 
     last_error = None
