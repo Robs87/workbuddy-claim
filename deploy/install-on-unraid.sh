@@ -11,6 +11,7 @@ set -euo pipefail
 
 OWNER="${1:-}"
 RECREATE="${2:-}"
+WB_TOKEN="${WB_TOKEN:-}"
 TMPL_DIR=/boot/config/plugins/dockerMan/templates-user
 TMPL="$TMPL_DIR/my-workbuddy-claim.xml"
 APPDATA=/mnt/user/appdata/workbuddy-claim
