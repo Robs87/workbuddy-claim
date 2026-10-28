@@ -1,0 +1,151 @@
+# workbuddy-claim
+
+WorkBuddy「Buddy 加油站」每日签到的无人值守容器。镜像由 **GitHub Actions 构建并推送到 ghcr.io**，Unraid 只负责拉取运行，不在本地构建。
+
+```
+GitHub Actions ──build──▶ ghcr.io/<owner>/workbuddy-claim:latest
+                                      │ docker pull（DockerMan 模板）
+                                      ▼
+                        Unraid: workbuddy-claim 容器
+                                      │ 每天 08:00 (Asia/Shanghai)
+                                      ▼
+                    POST www.codebuddy.cn/v2/billing/meter/daily-checkin
+```
+
+## 先读这一段
+
+- 签到走的是 WorkBuddy 客户端自己用的官方接口，鉴权就是你的登录态，**没有绕过任何校验**，只是把一次手工点击换成一次 HTTP 请求。
+- 接口对重复调用是幂等的：已签到返回 `code=10001`，不会多领，也不会扣分。
+- 官方口径是"人工签到"，且平台对脚本签到有风控。**用不用、用多久，请自行判断**；本仓库不保证账号策略变化后仍然可用。真出问题时撤销方式见文末。
+- 令牌等同登录态，只存在于 Unraid 的模板变量（权限 600）里，代码、日志、状态文件都不会记录它。
+
+## 一、拿到 accessToken
+
+浏览器登录 <https://www.codebuddy.cn>，按 F12 打开 DevTools：
+
+1. 切到 **Network** 面板，随便点开一个页面功能，筛出 `/v2/billing` 开头的请求；
+2. 看 **Request Headers** 里的 `Authorization: Bearer eyJhbGciOi...`；
+3. 复制 `Bearer ` 后面那一整串（很长，别截断）。
+
+令牌有效期约 **30 天**（`expiresIn=2592000`）。只要你平时用桌面客户端，登录态会自动续期；但容器拿不到刷新动作，所以**到期后要重新复制一次**填回 Unraid（下面第六节）。
+
+> 本机 `workbuddy-desktop.info` 里的令牌是 AES-256-GCM 信封加密的，脚本解不出来，也不该去解——请走 DevTools 手工复制这一条正道。
+
+## 二、建仓并推送
+
+```bash
+cd workbuddy-claim
+git init -b main
+git add -A
+git commit -m "feat: WorkBuddy daily check-in container"
+git remote add origin git@github.com:<你的账号>/workbuddy-claim.git
+git push -u origin main
+```
+
+推送后 Actions 自动构建。**仓库名建议全小写**（镜像名不能有大写字母，workflow 里已做小写化处理，但少一层转换更省心）。
+
+构建完成后镜像地址：
+
+```
+ghcr.io/<你的账号>/workbuddy-claim:latest
+```
+
+## 三、把包改成 public（关键一步）
+
+GHCR 的包**默认私有**，即使仓库是公开的。不改的话 Unraid 拉取会报 `unauthorized`。
+
+GitHub → 你的头像 → **Your profile** → **Packages** → `workbuddy-claim` → **Package settings** → **Danger Zone** → **Change visibility** → Public。
+
+若你就是要保持私有，则需在 Unraid 的 **Docker → Registry** 里加 ghcr 凭据（用户名 + PAT，scope 至少 `read:packages`），否则请走 public。
+
+## 四、部署到 Unraid
+
+前提：容器必须由 DockerMan 托管（`net.unraid.docker.managed=dockerman`），不要用裸 `docker run`。
+
+### 方式 A：WebUI 导入模板（推荐，后续可视化改参数）
+
+1. 把 `dockerman/my-workbuddy-claim.xml` 里的 `OWNER` 全部替换成你的 GitHub 账号，上传到：
+   `/boot/config/plugins/dockerMan/templates-user/my-workbuddy-claim.xml`
+2. Unraid → **Docker** → **Add Container** → 模板选 `workbuddy-claim`；
+3. 填 **Access Token**（第一节复制的值），其余默认；
+4. **Apply**。
+
+### 方式 B：一条命令（我用的方式）
+
+把 `deploy/` 与 `dockerman/` 一起传到 Unraid（例如 `/boot/config/workbuddy-claim/`），然后：
+
+```bash
+cd /boot/config/workbuddy-claim
+WB_TOKEN='粘贴令牌' bash deploy/install-on-unraid.sh <你的GitHub账号>
+```
+
+脚本会依次：备份旧模板与容器基线 → 建 appdata 并 `chown 1000:1000` → 渲染模板（权限 600）→ `docker pull` 先暴露权限/网络问题 → 通过 DockerMan 的 `xmlToCommand()` 建房 → 校验 dockerman 标签并打印日志。
+
+已存在同名容器时加 `--recreate`。
+
+## 五、验证
+
+```bash
+# 配置自检（不打印令牌，只报长度）
+docker exec workbuddy-claim python3 /app/claim.py --print-config
+
+# 立刻补签一次
+docker exec workbuddy-claim python3 /app/claim.py --once
+
+# 看日志
+docker logs --tail 50 workbuddy-claim
+```
+
+成功长这样：
+
+```
+[2026-10-29 08:00:03] CHECKIN_OK | base=https://www.codebuddy.cn msg=OK today_credit=100 total_credits=2951 streak_days=1
+```
+
+当天已领过：
+
+```
+[2026-10-29 08:00:03] ALREADY_CHECKED_IN | msg=今天已签到，请明天再来 total_credits=2951 streak_days=1
+```
+
+状态机在 `/mnt/user/appdata/workbuddy-claim/state.json`，含最近 90 天历史；`last_success` 是健康检查用的心跳文件，超过 36 小时未更新容器会被 Docker 标记为 `unhealthy`。
+
+## 六、令牌到期怎么续
+
+容器不会自己刷新令牌。收到 `AUTH_FAILED` 或日志里出现 `HTTP 401（网关拒绝…）` 时：
+
+1. 重新走第一节拿新令牌；
+2. Unraid → Docker → `workbuddy-claim` → **Edit** → 替换 **Access Token** → **Apply**；
+3. `docker exec workbuddy-claim python3 /app/claim.py --once` 确认。
+
+日常在用桌面客户端的话，令牌基本不会过期；**但只要连续 30 天不碰客户端就会失效**。
+
+## 七、常见问题
+
+| 现象 | 原因与处理 |
+|---|---|
+| `docker pull` 报 `unauthorized` | 包还是私有的，见第三节；或本地 ghcr 凭据失效 |
+| `AUTH_FAILED ... HTTP 401` | 令牌过期/复制不全（必须含 `Bearer ` 之后全部字符） |
+| `unexpected code=xxx` | 上游业务码变化，看日志里的 `msg`；接口路径可能改了，用 `WB_CLAIM_PATH` 覆盖，无需重建镜像 |
+| `响应不是 JSON` | 被网关/WAF 拦了，通常是 IP 或请求头不匹配；先设 `DRY_RUN=true` 确认出网 |
+| 日志时间不对 | 改 `TZ`（默认 `Asia/Shanghai`），同时确认 Unraid 宿主时区 |
+| 每天都没触发 | 看 `NEXT_RUN` 那行；容器重启会补签当天，如果一直 `SKIP_TODAY` 说明当天已领 |
+| 需要走代理 | 加 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量指向 mihomo（`192.168.31.190:20171`）；codebuddy.cn 属国内域名，默认规则会走 DIRECT，一般不需要 |
+
+## 八、撤销与回滚
+
+- **停用**：Unraid 里停掉容器即可，不影响任何账号状态。
+- **彻底撤销**：停容器 → 删容器与 `my-workbuddy-claim.xml` → 删 `/mnt/user/appdata/workbuddy-claim`。令牌本身通过「重新登录客户端」即作废，这是平台侧的撤销路径。
+- **改回旧模板**：`install-on-unraid.sh` 每次运行前会把旧模板和容器基线存到
+  `/boot/config/plugins/dockerMan/template-backups/workbuddy-claim-<时间戳>-pre/`。
+
+## 目录
+
+```
+app/claim.py                     签到主程序（纯标准库）
+Dockerfile                       python:3.12-alpine，非 root（uid 1000）
+.github/workflows/docker.yml     GitHub Actions → ghcr.io
+dockerman/my-workbuddy-claim.xml Unraid DockerMan 模板
+deploy/install-on-unraid.sh      Unraid 侧一键安装
+deploy/create-container.php      通过 DockerMan 的 xmlToCommand() 建房
+```

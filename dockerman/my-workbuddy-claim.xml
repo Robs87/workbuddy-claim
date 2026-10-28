@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>workbuddy-claim</Name>
+  <Repository>ghcr.io/OWNER/workbuddy-claim:latest</Repository>
+  <Registry>https://github.com/OWNER/workbuddy-claim/pkgs/container/workbuddy-claim</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <MyMAC/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/OWNER/workbuddy-claim/issues</Support>
+  <Project>https://github.com/OWNER/workbuddy-claim</Project>
+  <ReadMe>https://github.com/OWNER/workbuddy-claim/blob/main/README.md</ReadMe>
+  <Overview>WorkBuddy 每日签到（Buddy 加油站）。容器内按 Asia/Shanghai 定时调用官方签到接口，幂等：已签到返回 code=10001 时正常跳过。每日 +100 积分，连续第 7 天额外 1000。令牌写入模板变量，日志与状态文件均不记录明文令牌。</Overview>
+  <Category>Tools: Productivity:</Category>
+  <WebUI/>
+  <TemplateURL>https://github.com/OWNER/workbuddy-claim</TemplateURL>
+  <Icon>https://www.codebuddy.cn/favicon.ico</Icon>
+  <ExtraParams>--restart=unless-stopped --log-opt max-size=5m --log-opt max-file=2</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled>0</DateInstalled>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Access Token" Target="WB_TOKEN" Default="" Mode="" Description="WorkBuddy 登录态 accessToken。获取方式：浏览器登录 www.codebuddy.cn，F12 → Network → 任一 /v2/billing 请求 → 复制请求头 Authorization 中 Bearer 之后的部分。有效期约 30 天，日常使用桌面客户端会自动续期。" Type="Variable" Display="always" Required="true" Mask="true">WB_TOKEN_PLACEHOLDER</Config>
+  <Config Name="签到时间" Target="CLAIM_AT" Default="08:00" Mode="" Description="每天执行签到的时刻，24 小时制 HH:MM，时区由 TZ 决定。默认 08:00。" Type="Variable" Display="always" Required="true" Mask="false">08:00</Config>
+  <Config Name="时区" Target="TZ" Default="Asia/Shanghai" Mode="" Description="容器时区，影响 CLAIM_AT 的解释与日志时间戳。" Type="Variable" Display="advanced" Required="false" Mask="false">Asia/Shanghai</Config>
+  <Config Name="接口根地址" Target="WB_BASE_URL" Default="" Mode="" Description="留空则自动探测 www.codebuddy.cn 与 www.workbuddy.cn，命中后缓存。仅在官方更换域名时手动指定，例如 https://www.codebuddy.cn。" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="签到路径" Target="WB_CLAIM_PATH" Default="/v2/billing/meter/daily-checkin" Mode="" Description="签到接口路径。仅在上游改版时调整，无需重建镜像。" Type="Variable" Display="advanced" Required="false" Mask="false">/v2/billing/meter/daily-checkin</Config>
+  <Config Name="演练模式" Target="DRY_RUN" Default="false" Mode="" Description="true 时只打印将要请求的地址，不真正签到。用于首次验证网络与配置。" Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="数据目录" Target="/data" Default="/mnt/user/appdata/workbuddy-claim" Mode="rw" Description="签到状态、最近 90 天历史与成功心跳。属主必须是 1000:1000。" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/workbuddy-claim</Config>
+</Container>
