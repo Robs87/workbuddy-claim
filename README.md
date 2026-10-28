@@ -47,16 +47,20 @@ git push -u origin main
 构建完成后镜像地址：
 
 ```
-ghcr.io/<你的账号>/workbuddy-claim:latest
+ghcr.io/robs87/workbuddy-claim:latest
 ```
 
-## 三、把包改成 public（关键一步）
+## 三、包可见性
 
-GHCR 的包**默认私有**，即使仓库是公开的。不改的话 Unraid 拉取会报 `unauthorized`。
+GHCR 的包**不会随仓库转公开而自动公开**：包在首次发布时继承仓库可见性，之后再改仓库可见性不会回溯。
+
+当前状态：仓库 public、包 private，但 Unraid 的 `/root/.docker/config.json` 里已有可用的 ghcr 凭据，所以拉取正常。
+
+若想让拉取完全不依赖任何凭据（换机、撤销令牌后也不受影响），去改一次即可：
 
 GitHub → 你的头像 → **Your profile** → **Packages** → `workbuddy-claim` → **Package settings** → **Danger Zone** → **Change visibility** → Public。
 
-若你就是要保持私有，则需在 Unraid 的 **Docker → Registry** 里加 ghcr 凭据（用户名 + PAT，scope 至少 `read:packages`），否则请走 public。
+> 这一步无法用 API 完成：`PATCH /user/packages/...` 对用户级包返回 404，删除包版本需要 `delete:packages` scope。
 
 ## 四、部署到 Unraid
 
@@ -64,8 +68,9 @@ GitHub → 你的头像 → **Your profile** → **Packages** → `workbuddy-cla
 
 ### 方式 A：WebUI 导入模板（推荐，后续可视化改参数）
 
-1. 把 `dockerman/my-workbuddy-claim.xml` 里的 `OWNER` 全部替换成你的 GitHub 账号，上传到：
+1. 把 `dockerman/my-workbuddy-claim.xml` 上传到：
    `/boot/config/plugins/dockerMan/templates-user/my-workbuddy-claim.xml`
+   （仓库里已经是 `ghcr.io/robs87/...`，无需再替换占位符）
 2. Unraid → **Docker** → **Add Container** → 模板选 `workbuddy-claim`；
 3. 填 **Access Token**（第一节复制的值），其余默认；
 4. **Apply**。

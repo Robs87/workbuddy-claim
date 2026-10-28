@@ -1,20 +1,20 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>workbuddy-claim</Name>
-  <Repository>ghcr.io/OWNER/workbuddy-claim:latest</Repository>
-  <Registry>https://github.com/OWNER/workbuddy-claim/pkgs/container/workbuddy-claim</Registry>
+  <Repository>ghcr.io/robs87/workbuddy-claim:latest</Repository>
+  <Registry>https://github.com/Robs87/workbuddy-claim/pkgs/container/workbuddy-claim</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <MyMAC/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/OWNER/workbuddy-claim/issues</Support>
-  <Project>https://github.com/OWNER/workbuddy-claim</Project>
-  <ReadMe>https://github.com/OWNER/workbuddy-claim/blob/main/README.md</ReadMe>
+  <Support>https://github.com/Robs87/workbuddy-claim/issues</Support>
+  <Project>https://github.com/Robs87/workbuddy-claim</Project>
+  <ReadMe>https://github.com/Robs87/workbuddy-claim/blob/main/README.md</ReadMe>
   <Overview>WorkBuddy 每日签到（Buddy 加油站）。容器内按 Asia/Shanghai 定时调用官方签到接口，幂等：已签到返回 code=10001 时正常跳过。每日 +100 积分，连续第 7 天额外 1000。令牌写入模板变量，日志与状态文件均不记录明文令牌。</Overview>
   <Category>Tools: Productivity:</Category>
   <WebUI/>
-  <TemplateURL>https://github.com/OWNER/workbuddy-claim</TemplateURL>
+  <TemplateURL>https://github.com/Robs87/workbuddy-claim</TemplateURL>
   <Icon>https://www.codebuddy.cn/favicon.ico</Icon>
   <ExtraParams>--restart=unless-stopped --log-opt max-size=5m --log-opt max-file=2</ExtraParams>
   <PostArgs/>

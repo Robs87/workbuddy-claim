@@ -21,7 +21,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 [ -n "$OWNER" ] || die "缺少 GitHub 用户/组织名。用法: WB_TOKEN=... $0 <github-owner> [--recreate]"
 [ -f "$SRC_TMPL" ] || die "找不到模板源文件: $SRC_TMPL"
-[ -n "${WB_TOKEN:-}" ] || die "缺少 WB_TOKEN 环境变量（浏览器 DevTools 里那串 Bearer 值）"
+[ -n "${WB_TOKEN:-}" ] || echo "WARN: 未提供 WB_TOKEN，将以空令牌建房（容器会打印 CONFIG_ERROR 但不动作），随后在 Unraid WebUI 的模板编辑里补填 Access Token"
 
 echo "== 1/5 备份现有模板与容器基线 =="
 mkdir -p "$BACKUP_DIR"
