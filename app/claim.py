@@ -30,8 +30,23 @@ HEARTBEAT_FILE = os.path.join(DATA_DIR, "last_success")
 
 # 官方口径（2026-10 实测可用）。若上游改版，改这两个环境变量即可，不必重建镜像。
 CLAIM_PATH = os.environ.get("WB_CLAIM_PATH") or "/v2/billing/meter/daily-checkin"
-TOKEN = (os.environ.get("WB_TOKEN") or "").strip()
+
+# 网页端有可能给 cookie 而不是 bearer，两种都收。
+COOKIE = (os.environ.get("WB_COOKIE") or "").strip()
 BASE_URL_OVERRIDE = (os.environ.get("WB_BASE_URL") or "").strip().rstrip("/")
+
+
+def _normalize_token(raw: str) -> str:
+    """容错：粘贴时带了 "Bearer " 前缀、引号或换行都要能认。"""
+    v = (raw or "").strip().strip('"').strip("'").replace("\n", "").replace("\r", "")
+    for prefix in ("Bearer ", "bearer ", "BEARER "):
+        if v.startswith(prefix):
+            v = v[len(prefix):].strip()
+            break
+    return v
+
+
+TOKEN = _normalize_token(os.environ.get("WB_TOKEN") or "")
 
 CLAIM_AT = os.environ.get("CLAIM_AT") or "08:00"
 DRY_RUN = (os.environ.get("DRY_RUN") or "").lower() in {"1", "true", "yes", "on"}
@@ -101,11 +116,14 @@ def post_json(base: str, path: str) -> dict:
     req = urllib.request.Request(url, data=b"{}", method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
-    req.add_header("Authorization", f"Bearer {TOKEN}")
+    if TOKEN:
+        req.add_header("Authorization", f"Bearer {TOKEN}")
+    if COOKIE:
+        req.add_header("Cookie", COOKIE)
     req.add_header("User-Agent", f"workbuddy-claim/{VERSION}")
     # 与网页端保持同源特征，避免网关按来源拦截
     req.add_header("Origin", base)
-    req.add_header("Referer", base + "/profile/usage")
+    req.add_header("Referer", base + "/profile/plan")
     try:
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8", "replace")
@@ -196,8 +214,8 @@ def attempt(base: str) -> str:
 
 def run_claim() -> int:
     """执行一次领取。返回进程退出码语义：0 成功/已签，2 鉴权失败。"""
-    if not TOKEN:
-        log("CONFIG_ERROR", hint="未设置 WB_TOKEN")
+    if not TOKEN and not COOKIE:
+        log("CONFIG_ERROR", hint="未设置 WB_TOKEN（或 WB_COOKIE）")
         return 2
 
     last_error = None
@@ -233,7 +251,7 @@ def run_claim() -> int:
                     "AUTH_FAILED",
                     base=base,
                     detail=str(exc),
-                    hint="令牌已失效：浏览器打开 www.codebuddy.cn，在 DevTools 里复制新的 Authorization Bearer 值",
+                    hint="令牌已失效：打开 https://www.codebuddy.cn/profile/plan ，F12 → Network → 任一 checkin 请求的 Authorization 或 Cookie 头",
                 )
                 state = read_state()
                 state.update(
@@ -296,6 +314,7 @@ def main_loop() -> int:
         base=BASE_URL_OVERRIDE or "auto",
         dry_run=DRY_RUN,
         token_present=bool(TOKEN),
+        cookie_present=bool(COOKIE),
     )
     if claimed_today():
         log("SKIP_TODAY", reason="今日已成功领取")
@@ -335,6 +354,7 @@ def main(argv: list[str]) -> int:
             dry_run=DRY_RUN,
             token_present=bool(TOKEN),
             token_length=len(TOKEN) or None,
+            cookie_present=bool(COOKIE),
         )
         return 0
     return main_loop()
