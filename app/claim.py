@@ -21,7 +21,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 HTTP_TIMEOUT = 20
 
 TZ = ZoneInfo(os.environ.get("TZ_NAME") or os.environ.get("TZ") or "Asia/Shanghai")
@@ -62,9 +62,11 @@ def _token_problem(v: str) -> str | None:
     """
     if not v:
         return None
-    for marker in ("console.log", "function", "=>", "()=>", "();"):
+    if len(v) > 1200:
+        return f"长度 {len(v)}，疑似整段代码/文件；令牌约 200–400 字符"
+    for marker in ("sensorsdata", "console.log", "function", "=>", "()=>", "();", ".js"):
         if marker in v:
-            return "看起来是 JS 代码而不是令牌"
+            return "看起来是 JS 代码/SDK 源码而不是令牌"
     if "\n" in v or "\r" in v:
         return "含换行"
     if not v.isascii():
@@ -74,6 +76,8 @@ def _token_problem(v: str) -> str | None:
         return "中间含空格"
     if len(v) < 40:
         return f"长度只有 {len(v)}，正常令牌超过 100 字符"
+    if not v.startswith("eyJ"):
+        return "不是 JWT 形态：正常令牌以 eyJ 开头"
     return None
 
 
