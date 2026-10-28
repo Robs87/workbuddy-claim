@@ -24,7 +24,7 @@
   <DonateLink/>
   <Requires/>
   <Config Name="Access Token" Target="WB_TOKEN" Default="" Mode="" Description="WorkBuddy 登录态 accessToken。获取方式：浏览器登录 www.codebuddy.cn，F12 → Network → 任一 /v2/billing 请求 → 复制请求头 Authorization 中 Bearer 之后的部分。有效期约 30 天，日常使用桌面客户端会自动续期。" Type="Variable" Display="always" Required="true" Mask="true">WB_TOKEN_PLACEHOLDER</Config>
-  <Config Name="签到时间" Target="CLAIM_AT" Default="08:00" Mode="" Description="每天执行签到的时刻，24 小时制 HH:MM，时区由 TZ 决定。默认 08:00。" Type="Variable" Display="always" Required="true" Mask="false">08:00</Config>
+  <Config Name="签到时间" Target="CLAIM_AT" Default="09:00" Mode="" Description="每天执行签到的时刻，24 小时制 HH:MM，时区由 TZ 决定。默认 09:00。" Type="Variable" Display="always" Required="true" Mask="false">09:00</Config>
   <Config Name="时区" Target="TZ" Default="Asia/Shanghai" Mode="" Description="容器时区，影响 CLAIM_AT 的解释与日志时间戳。" Type="Variable" Display="advanced" Required="false" Mask="false">Asia/Shanghai</Config>
   <Config Name="接口根地址" Target="WB_BASE_URL" Default="" Mode="" Description="留空则自动探测 www.codebuddy.cn 与 www.workbuddy.cn，命中后缓存。仅在官方更换域名时手动指定，例如 https://www.codebuddy.cn。" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
   <Config Name="签到路径" Target="WB_CLAIM_PATH" Default="/v2/billing/meter/daily-checkin" Mode="" Description="签到接口路径。仅在上游改版时调整，无需重建镜像。" Type="Variable" Display="advanced" Required="false" Mask="false">/v2/billing/meter/daily-checkin</Config>
