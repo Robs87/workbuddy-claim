@@ -11,7 +11,7 @@
   <Support>https://github.com/Robs87/workbuddy-claim/issues</Support>
   <Project>https://github.com/Robs87/workbuddy-claim</Project>
   <ReadMe>https://github.com/Robs87/workbuddy-claim/blob/main/README.md</ReadMe>
-  <Overview>WorkBuddy 每日签到（Buddy 加油站）。容器内按 Asia/Shanghai 定时调用官方签到接口，幂等：已签到返回 code=10001 时正常跳过。每日 +100 积分，连续第 7 天额外 1000。令牌写入模板变量，日志与状态文件均不记录明文令牌。</Overview>
+  <Overview>WorkBuddy 每日签到（Buddy 加油站）。凭据默认来自同机 CookieCloud：每次运行拉取浏览器最新登录态，令牌随之自动续期，不再需要手动粘贴。拉取失败时回退到模板里手填的 Access Token。容器按 Asia/Shanghai 定时调用官方签到接口，幂等：已签到返回 code=10001 时正常跳过。日志与状态文件均不记录明文凭据。</Overview>
   <Category>Tools: Productivity:</Category>
   <WebUI/>
   <TemplateURL>https://github.com/Robs87/workbuddy-claim</TemplateURL>
@@ -23,8 +23,12 @@
   <DonateText/>
   <DonateLink/>
   <Requires/>
-  <Config Name="Access Token" Target="WB_TOKEN" Default="" Mode="" Description="WorkBuddy 登录态令牌。获取：浏览器登录 https://www.codebuddy.cn/profile/plan → F12 → Console 粘贴钩子脚本 → 点签到 → 自动打印并复制。填令牌本身即可，带 Bearer 前缀也能识别。" Type="Variable" Display="always" Required="false" Mask="true">WB_TOKEN_PLACEHOLDER</Config>
-  <Config Name="Cookie（备用）" Target="WB_COOKIE" Default="" Mode="" Description="仅当网页端用 Cookie 鉴权时才需要：把 DevTools 里请求头 Cookie 的整串粘贴到这里，留空则只用 Access Token。" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Access Token" Target="WB_TOKEN" Default="" Mode="" Description="手动兜底令牌。配好 CookieCloud 后可以留空：每次运行优先从 CookieCloud 取最新登录态，取不到才用这里的值。" Type="Variable" Display="always" Required="false" Mask="true">WB_TOKEN_PLACEHOLDER</Config>
+  <Config Name="Cookie（兜底）" Target="WB_COOKIE" Default="" Mode="" Description="手动兜底的 Cookie 串，一般不填。CookieCloud 会自动提供。" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="CookieCloud 地址" Target="CC_URL" Default="http://192.168.31.190:8089" Mode="" Description="同机 CookieCloud 服务地址。容器每次运行都会请求它，换取浏览器当前登录态。" Type="Variable" Display="always" Required="false" Mask="false">http://192.168.31.190:8089</Config>
+  <Config Name="CookieCloud UUID" Target="CC_UUID" Default="GtUiocG13JVC8zrAtHxheZ" Mode="" Description="浏览器扩展设置页里的 UUID，也是服务端数据文件名。" Type="Variable" Display="always" Required="false" Mask="false">GtUiocG13JVC8zrAtHxheZ</Config>
+  <Config Name="CookieCloud 密码" Target="CC_PASSWORD" Default="" Mode="" Description="浏览器扩展设置页里的密码，服务端用它解密后直接返回明文，因此容器内无需实现 AES。必填，否则退化为只用 Access Token。" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="目标域名" Target="CC_DOMAIN" Default="codebuddy.cn" Mode="" Description="从 CookieCloud 数据里挑哪个站点的 cookie / localStorage。默认 codebuddy.cn，若登录态在 workbuddy.cn 下则改成该值。" Type="Variable" Display="advanced" Required="false" Mask="false">codebuddy.cn</Config>
   <Config Name="签到时间" Target="CLAIM_AT" Default="09:00" Mode="" Description="每天执行签到的时刻，24 小时制 HH:MM，时区由 TZ 决定。默认 09:00。" Type="Variable" Display="always" Required="true" Mask="false">09:00</Config>
   <Config Name="时区" Target="TZ" Default="Asia/Shanghai" Mode="" Description="容器时区，影响 CLAIM_AT 的解释与日志时间戳。" Type="Variable" Display="advanced" Required="false" Mask="false">Asia/Shanghai</Config>
   <Config Name="接口根地址" Target="WB_BASE_URL" Default="" Mode="" Description="留空则自动探测 www.codebuddy.cn 与 www.workbuddy.cn，命中后缓存。仅在官方更换域名时手动指定，例如 https://www.codebuddy.cn。" Type="Variable" Display="advanced" Required="false" Mask="false"></Config>

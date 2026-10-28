@@ -117,15 +117,44 @@ docker logs --tail 50 workbuddy-claim
 
 状态机在 `/mnt/user/appdata/workbuddy-claim/state.json`，含最近 90 天历史；`last_success` 是健康检查用的心跳文件，超过 36 小时未更新容器会被 Docker 标记为 `unhealthy`。
 
-## 六、令牌到期怎么续
+## 六、令牌自动续期（接 Unraid 上的 CookieCloud）
 
-容器不会自己刷新令牌。收到 `AUTH_FAILED` 或日志里出现 `HTTP 401（网关拒绝…）` 时：
+容器每次运行都先向同机的 CookieCloud 要一次浏览器当前登录态，拿到就用，拿不到才回退到模板里手填的 `WB_TOKEN`。于是「令牌 30 天过期」这件事由浏览器接管了。
 
-1. 重新走第一节拿新令牌；
-2. Unraid → Docker → `workbuddy-claim` → **Edit** → 替换 **Access Token** → **Apply**；
-3. `docker exec workbuddy-claim python3 /app/claim.py --once` 确认。
+前置：Unraid 上有 `easychen/cookiecloud` 在跑，浏览器装了 CookieCloud 扩展且**已同步过 www.codebuddy.cn**（在该站点登录并正常浏览一次即可触发同步）。
 
-日常在用桌面客户端的话，令牌基本不会过期；**但只要连续 30 天不碰客户端就会失效**。
+模板里四个参数：
+
+| 参数 | 说明 |
+|---|---|
+| `CC_URL` | `http://192.168.31.190:8089`（同机默认值） |
+| `CC_UUID` | 扩展设置页里的 UUID，也是服务端数据文件名 |
+| `CC_PASSWORD` | 扩展设置页里的密码，**必填** |
+| `CC_DOMAIN` | 默认 `codebuddy.cn`；若登录态在 `workbuddy.cn` 下则改掉 |
+
+服务端 `POST /get/<uuid>` 带 `password` 时会直接返回明文，所以容器内没有任何 AES 实现，也不需要保存浏览器密码之外的密钥。
+
+凭据选择顺序：**localStorage 里的令牌 → 该域名的 cookie → 手动填的 `WB_TOKEN`**。两者都会随请求发出，服务端认哪个用哪个。
+
+诊断（只打印结构与键名，不输出任何凭据值）：
+
+```bash
+docker exec workbuddy-claim python3 /app/claim.py --cc-probe
+```
+
+正常会看到类似：
+
+```
+CC_OK | hosts=www.codebuddy.cn cookie_count=6 token_present=True token_host=www.codebuddy.cn
+```
+
+失败排查：
+
+- `CC_FAIL status=500` → 密码错；
+- `CC_EMPTY` → 同步过，但里面没有 codebuddy.cn 的数据，去浏览器访问一次该站点再等扩展同步；
+- `CC_SKIP` → `CC_UUID`/`CC_PASSWORD` 没填。
+
+仍然手动处理的情况：CookieCloud 里也没有可用凭据（比如换了设备、清了浏览器数据、扩展停了），日志出现 `AUTH_FINAL`，此时按第一节重新取一个令牌填进去即可。
 
 ## 七、常见问题
 

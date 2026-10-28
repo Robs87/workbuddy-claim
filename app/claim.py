@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -20,7 +21,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 HTTP_TIMEOUT = 20
 
 TZ = ZoneInfo(os.environ.get("TZ_NAME") or os.environ.get("TZ") or "Asia/Shanghai")
@@ -34,6 +35,12 @@ CLAIM_PATH = os.environ.get("WB_CLAIM_PATH") or "/v2/billing/meter/daily-checkin
 # 网页端有可能给 cookie 而不是 bearer，两种都收。
 COOKIE = (os.environ.get("WB_COOKIE") or "").strip()
 BASE_URL_OVERRIDE = (os.environ.get("WB_BASE_URL") or "").strip().rstrip("/")
+
+# CookieCloud 凭据源：每次运行都去拉一次最新的浏览器登录态，令牌因此能自动续期。
+CC_URL = (os.environ.get("CC_URL") or "http://192.168.31.190:8089").strip().rstrip("/")
+CC_UUID = (os.environ.get("CC_UUID") or "").strip()
+CC_PASSWORD = os.environ.get("CC_PASSWORD") or ""
+CC_DOMAIN = (os.environ.get("CC_DOMAIN") or "codebuddy.cn").strip().lstrip(".")
 
 
 def _normalize_token(raw: str) -> str:
@@ -111,15 +118,159 @@ def write_state(state: dict) -> None:
         log("STATE_WRITE_FAILED", error=type(exc).__name__)
 
 
-def post_json(base: str, path: str) -> dict:
+def cookiecloud_fetch() -> dict | None:
+    """从 CookieCloud 拉取已解密的浏览器数据。
+
+    该服务端在 POST body 里带 password 时会直接返回明文，
+    因此容器侧不需要内置 AES 实现。
+    """
+    if not (CC_UUID and CC_PASSWORD):
+        log("CC_SKIP", reason="未配置 CC_UUID / CC_PASSWORD")
+        return None
+    url = f"{CC_URL}/get/{CC_UUID}"
+    body = json.dumps({"password": CC_PASSWORD}).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            log("CC_FAIL", reason="返回结构异常")
+            return None
+        return payload
+    except urllib.error.HTTPError as exc:
+        hint = "密码错误或 CookieCloud 拒绝了解密" if exc.code >= 500 else "端点返回错误"
+        log("CC_FAIL", status=exc.code, hint=hint)
+        return None
+    except Exception as exc:
+        log("CC_FAIL", error=f"{type(exc).__name__}: {exc}")
+        return None
+
+
+JWT_RE = re.compile(r"eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")
+TOKEN_KEY_RE = re.compile(r"(access[_-]?token|id[_-]?token|^token$|authorization|jwt)", re.I)
+
+
+def domain_match(host: str, want: str) -> bool:
+    """同时接受 'www.codebuddy.cn'、'.codebuddy.cn'、'https://www.codebuddy.cn/path' 三种写法。"""
+    h = re.sub(r"^[a-z][a-z0-9+.\-]*://", "", (host or "").strip().lower())
+    h = h.split("/")[0].split(":")[0].lstrip(".")
+    return bool(h) and (h == want or h.endswith("." + want))
+
+
+def find_token(obj, depth: int = 0) -> str | None:
+    """在 localStorage 快照里找形似令牌的值。优先 JWT 形态。"""
+    if depth > 6:
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, str):
+                m = JWT_RE.search(value)
+                if m:
+                    return m.group(0)
+                if TOKEN_KEY_RE.search(str(key)) and 20 <= len(value) <= 4096 and " " not in value:
+                    return value
+            else:
+                found = find_token(value, depth + 1)
+                if found:
+                    return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = find_token(item, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, str):
+        m = JWT_RE.search(obj)
+        if m:
+            return m.group(0)
+    return None
+
+
+def collect_cookies(payload: dict) -> dict:
+    """按 CC_DOMAIN 过滤出未过期 cookie，返回 {host: [cookie,...]}。"""
+    now = time.time()
+    out: dict[str, list] = {}
+    data = payload.get("cookie_data") or {}
+    if isinstance(data, list):  # 少数版本是扁平列表
+        data = {"_": data}
+    for host, items in data.items():
+        if not domain_match(str(host), CC_DOMAIN):
+            continue
+        keep = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            exp = item.get("expirationDate")
+            if isinstance(exp, (int, float)) and exp > 0 and exp < now:
+                continue
+            if not item.get("name"):
+                continue
+            keep.append(item)
+        if keep:
+            out[str(host)] = keep
+    return out
+
+
+def credentials_from_cookiecloud() -> dict | None:
+    payload = cookiecloud_fetch()
+    if payload is None:
+        return None
+
+    cookies = collect_cookies(payload)
+    storage = payload.get("local_storage_data") or {}
+    token = None
+    token_host = None
+    if isinstance(storage, dict):
+        for host, values in storage.items():
+            if domain_match(str(host), CC_DOMAIN):
+                token = find_token(values)
+                if token:
+                    token_host = str(host)
+                    break
+        if not token and len(storage) == 1:
+            # 存储键可能不是域名（例如完整 URL 或站点 ID），单一主机时允许兜底
+            only_host, only_values = next(iter(storage.items()))
+            token = find_token(only_values)
+            if token:
+                token_host = f"{only_host}(唯一主机兜底)"
+
+    cookie_host = None
+    cookie_header = None
+    if cookies:
+        # 优先用最贴近 API 的主机
+        cookie_host = sorted(cookies, key=len, reverse=True)[0]
+        cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies[cookie_host])
+
+    log(
+        "CC_OK",
+        hosts=",".join(sorted(cookies)) or None,
+        cookie_count=sum(len(v) for v in cookies.values()) or 0,
+        token_present=bool(token),
+        token_host=token_host,
+        cookie_host=cookie_host,
+    )
+    if not token and not cookie_header:
+        log("CC_EMPTY", reason=f"没有匹配 {CC_DOMAIN} 的登录态，浏览器需先访问一次该站点并同步")
+        return None
+    return {"source": "cookiecloud", "token": token, "cookie": cookie_header}
+
+
+def env_credentials() -> dict | None:
+    if not TOKEN and not COOKIE:
+        return None
+    return {"source": "env", "token": TOKEN or None, "cookie": COOKIE or None}
+
+
+def post_json(base: str, path: str, cred: dict) -> dict:
     url = base + path
     req = urllib.request.Request(url, data=b"{}", method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
-    if TOKEN:
-        req.add_header("Authorization", f"Bearer {TOKEN}")
-    if COOKIE:
-        req.add_header("Cookie", COOKIE)
+    if cred.get("token"):
+        req.add_header("Authorization", f"Bearer {cred['token']}")
+    if cred.get("cookie"):
+        req.add_header("Cookie", cred["cookie"])
     req.add_header("User-Agent", f"workbuddy-claim/{VERSION}")
     # 与网页端保持同源特征，避免网关按来源拦截
     req.add_header("Origin", base)
@@ -175,13 +326,13 @@ FIELDS = {
 }
 
 
-def attempt(base: str) -> str:
+def attempt(base: str, cred: dict) -> str:
     """返回 ok / already / auth。异常向上抛。"""
     if DRY_RUN:
-        log("DRY_RUN", would_post=base + CLAIM_PATH)
+        log("DRY_RUN", would_post=base + CLAIM_PATH, source=cred.get("source"))
         return "ok"
 
-    payload = post_json(base, CLAIM_PATH)
+    payload = post_json(base, CLAIM_PATH, cred)
     code = payload.get("code")
     msg = payload.get("msg") or payload.get("message")
     info = collect(payload, FIELDS)
@@ -190,6 +341,7 @@ def attempt(base: str) -> str:
         log(
             "CHECKIN_OK",
             base=base,
+            source=cred.get("source"),
             msg=msg,
             today_credit=info.get("today_credit") or info.get("daily_credit"),
             total_credits=info.get("total_credits"),
@@ -212,72 +364,90 @@ def attempt(base: str) -> str:
     raise RuntimeError(f"unexpected code={code} msg={msg}")
 
 
+def resolve_credentials() -> list[dict]:
+    """按新鲜度排序的凭据源：CookieCloud 在前（浏览器刚同步过），环境变量垫底。"""
+    creds: list[dict] = []
+    cc = credentials_from_cookiecloud()
+    if cc:
+        creds.append(cc)
+    env = env_credentials()
+    if env:
+        creds.append(env)
+    return creds
+
+
+def _mark(state_key: str, **fields) -> None:
+    state = read_state()
+    state.update({"last_attempt": datetime.now(TZ).isoformat(timespec="seconds"), **fields})
+    write_state(state)
+
+
 def run_claim() -> int:
-    """执行一次领取。返回进程退出码语义：0 成功/已签，2 鉴权失败。"""
-    if not TOKEN and not COOKIE:
-        log("CONFIG_ERROR", hint="未设置 WB_TOKEN（或 WB_COOKIE）")
+    """执行一次领取。返回进程退出码语义：0 成功/已签，2 鉴权失败，1 其它失败。"""
+    creds = resolve_credentials()
+    if not creds:
+        log("CONFIG_ERROR", hint="既没有 CookieCloud 凭据（CC_UUID/CC_PASSWORD），也没有 WB_TOKEN/WB_COOKIE")
         return 2
 
     last_error = None
+    rejected: list[str] = []
     for base in bases():
-        for i in range(1, RETRIES + 1):
-            try:
-                outcome = attempt(base)
-                state = read_state()
-                state.update(
-                    {
-                        "working_base": base,
-                        "last_attempt": datetime.now(TZ).isoformat(timespec="seconds"),
-                        "last_outcome": outcome,
-                        "version": VERSION,
-                    }
-                )
-                today = datetime.now(TZ).strftime("%Y-%m-%d")
-                state["last_success_date"] = today
-                state["last_success_at"] = datetime.now(TZ).isoformat(timespec="seconds")
-                state["last_error"] = None
-                history = state.get("history") or []
-                history.append({"date": today, "outcome": outcome, "at": state["last_success_at"]})
-                state["history"] = history[-90:]
-                write_state(state)
+        for cred in creds:
+            source = cred.get("source")
+            for i in range(1, RETRIES + 1):
                 try:
-                    with open(HEARTBEAT_FILE, "w", encoding="utf-8") as fh:
-                        fh.write(state["last_success_at"])
-                except Exception:
-                    pass
-                return 0
-            except AuthError as exc:
-                log(
-                    "AUTH_FAILED",
-                    base=base,
-                    detail=str(exc),
-                    hint="令牌已失效：打开 https://www.codebuddy.cn/profile/plan ，F12 → Network → 任一 checkin 请求的 Authorization 或 Cookie 头",
-                )
-                state = read_state()
-                state.update(
-                    {
-                        "last_attempt": datetime.now(TZ).isoformat(timespec="seconds"),
-                        "last_outcome": "auth_failed",
-                        "last_error": str(exc),
-                    }
-                )
-                write_state(state)
-                return 2
-            except Exception as exc:
-                last_error = exc
-                log("ATTEMPT_FAILED", base=base, try_no=i, error=f"{type(exc).__name__}: {exc}")
-                if i < RETRIES:
-                    time.sleep(min(5 * (3 ** (i - 1)), 60))
+                    outcome = attempt(base, cred)
+                    now_iso = datetime.now(TZ).isoformat(timespec="seconds")
+                    today = datetime.now(TZ).strftime("%Y-%m-%d")
+                    state = read_state()
+                    state.update(
+                        {
+                            "working_base": base,
+                            "working_source": source,
+                            "last_attempt": now_iso,
+                            "last_outcome": outcome,
+                            "last_success_date": today,
+                            "last_success_at": now_iso,
+                            "last_error": None,
+                            "version": VERSION,
+                        }
+                    )
+                    history = state.get("history") or []
+                    history.append({"date": today, "outcome": outcome, "source": source, "at": now_iso})
+                    state["history"] = history[-90:]
+                    write_state(state)
+                    try:
+                        with open(HEARTBEAT_FILE, "w", encoding="utf-8") as fh:
+                            fh.write(now_iso)
+                    except Exception:
+                        pass
+                    return 0
+                except AuthError as exc:
+                    rejected.append(f"{source}@{base}")
+                    log(
+                        "AUTH_FAILED",
+                        base=base,
+                        source=source,
+                        detail=str(exc),
+                        hint="该凭据被服务端拒绝，换下一个来源",
+                    )
+                    break  # 同一凭据重试无意义，直接换源
+                except Exception as exc:
+                    last_error = exc
+                    log("ATTEMPT_FAILED", base=base, source=source, try_no=i, error=f"{type(exc).__name__}: {exc}")
+                    if i < RETRIES:
+                        time.sleep(min(5 * (3 ** (i - 1)), 60))
 
-    state = read_state()
-    state.update(
-        {
-            "last_attempt": datetime.now(TZ).isoformat(timespec="seconds"),
-            "last_outcome": "failed",
-            "last_error": f"{type(last_error).__name__}: {last_error}",
-        }
-    )
-    write_state(state)
+    if rejected and last_error is None:
+        _mark("auth_failed", last_outcome="auth_failed", last_error=f"全部凭据被拒: {', '.join(rejected)}")
+        log(
+            "AUTH_FINAL",
+            rejected=",".join(rejected),
+            hint="在浏览器打开 https://www.codebuddy.cn/profile/plan 确认已登录，并让 CookieCloud 同步一次",
+        )
+        return 2
+
+    _mark("failed", last_outcome="failed", last_error=f"{type(last_error).__name__}: {last_error}")
     log("CHECKIN_FAILED", error=str(last_error))
     return 1
 
@@ -315,6 +485,7 @@ def main_loop() -> int:
         dry_run=DRY_RUN,
         token_present=bool(TOKEN),
         cookie_present=bool(COOKIE),
+        cookiecloud=bool(CC_UUID and CC_PASSWORD),
     )
     if claimed_today():
         log("SKIP_TODAY", reason="今日已成功领取")
@@ -331,6 +502,40 @@ def main_loop() -> int:
         except Exception as exc:  # 任何异常都不应让容器退出
             log("CYCLE_ERROR", error=f"{type(exc).__name__}: {exc}")
             time.sleep(600)
+
+
+def probe_cookiecloud() -> int:
+    """诊断模式：只打印结构与键名，绝不输出凭据值。"""
+    payload = cookiecloud_fetch()
+    if payload is None:
+        return 1
+    print("== CookieCloud 结构摘要（不含任何凭据值）==")
+    print("顶层键:", ", ".join(sorted(payload.keys())))
+
+    cd = payload.get("cookie_data") or {}
+    if isinstance(cd, dict):
+        for host in sorted(cd):
+            items = cd[host] or []
+            names = sorted({str(i.get("name")) for i in items if isinstance(i, dict)})
+            print(f"  cookie  {host}: {len(items)} 条 -> {','.join(names)[:140]}")
+
+    ls = payload.get("local_storage_data") or {}
+    if isinstance(ls, dict):
+        for host in sorted(ls):
+            kv = ls[host]
+            if not isinstance(kv, dict):
+                print(f"  storage {host}: 非字典({type(kv).__name__})")
+                continue
+            marks = []
+            for k, v in kv.items():
+                sv = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+                marks.append(f"{k}(len={len(sv)}{',JWT' if JWT_RE.search(sv) else ''})")
+            print(f"  storage {host}: {', '.join(marks)[:200]}")
+
+    matched = collect_cookies(payload)
+    print(f"匹配 {CC_DOMAIN} 的 cookie 域:", ", ".join(sorted(matched)) or "无")
+    print("可提取令牌:", "是" if any(find_token(v) for v in ls.values()) else "否")
+    return 0
 
 
 def main(argv: list[str]) -> int:
@@ -355,8 +560,14 @@ def main(argv: list[str]) -> int:
             token_present=bool(TOKEN),
             token_length=len(TOKEN) or None,
             cookie_present=bool(COOKIE),
+            cc_url=CC_URL,
+            cc_uuid=bool(CC_UUID),
+            cc_password=bool(CC_PASSWORD),
+            cc_domain=CC_DOMAIN,
         )
         return 0
+    if "--cc-probe" in argv:
+        return probe_cookiecloud()
     return main_loop()
 
 
